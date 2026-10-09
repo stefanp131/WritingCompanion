@@ -86,6 +86,10 @@ export interface ElectronAPI {
     apiKey?: string;
     model?: string;
   }) => Promise<{ success: boolean; text?: string; error?: string }>;
+  listChatSessions: (filePath: string) => Promise<ChatSession[]>;
+  saveChatSession: (filePath: string, session: ChatSession) => Promise<{ success: boolean; session?: ChatSession; error?: string }>;
+  deleteChatSession: (filePath: string, sessionId: string) => Promise<{ success: boolean; error?: string }>;
+  clearChatSessions: (filePath: string) => Promise<{ success: boolean; error?: string }>;
 }
 
 export interface ChatMessage {
@@ -93,6 +97,14 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
   timestamp: string;
+}
+
+export interface ChatSession {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messages: ChatMessage[];
 }
 
 declare global {

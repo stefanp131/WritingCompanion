@@ -17,7 +17,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { CreateDocModal } from './components/CreateDocModal';
 import { ConfirmModal } from './components/ConfirmModal';
 import { ThemeSelector, AppTheme } from './components/ThemeSelector';
-import { DocumentItem, VersionItem, AppSettings, ChatMessage } from './types';
+import { DocumentItem, VersionItem, AppSettings, ChatMessage, ChatSession } from './types';
 
 export const App: React.FC = () => {
   const [theme, setTheme] = useState<AppTheme>(() => {
@@ -31,7 +31,8 @@ export const App: React.FC = () => {
   const [versions, setVersions] = useState<VersionItem[]>([]);
   const [isHistoryOpen, setIsHistoryOpen] = useState(false);
   const [isChatOpen, setIsChatOpen] = useState(false);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatSessions, setChatSessions] = useState<ChatSession[]>([]);
+  const [activeChatSessionId, setActiveChatSessionId] = useState<string | null>(null);
   const [isChatLoading, setIsChatLoading] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -108,6 +109,7 @@ export const App: React.FC = () => {
       latestContentRef.current = res.content;
       setSaveStatus('saved');
       loadVersionsForDoc(doc.path);
+      loadChatSessionsForDoc(doc.path);
     }
   };
 
@@ -115,6 +117,23 @@ export const App: React.FC = () => {
     if (!window.electronAPI) return;
     const vers = await window.electronAPI.getVersions(filePath);
     setVersions(vers);
+  };
+
+  const loadChatSessionsForDoc = async (filePath: string) => {
+    if (!window.electronAPI) return;
+    try {
+      const list = await window.electronAPI.listChatSessions(filePath);
+      setChatSessions(list);
+      if (list.length > 0) {
+        setActiveChatSessionId(list[0].id);
+      } else {
+        setActiveChatSessionId(null);
+      }
+    } catch (e) {
+      console.error('Error loading chat sessions:', e);
+      setChatSessions([]);
+      setActiveChatSessionId(null);
+    }
   };
 
   // Content change handler from Editor - NO auto-save!
@@ -272,12 +291,52 @@ export const App: React.FC = () => {
     }
   };
 
-  // Chat AI handlers
-  const handleSendChatMessage = async (text: string, includeDocContext: boolean) => {
-    if (!settings?.geminiApiKey && !window.electronAPI) {
+  // Chat AI handlers (organized per document)
+  const handleCreateNewChatSession = () => {
+    if (!activeDoc) return;
+    const newSession: ChatSession = {
+      id: `chat_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      title: 'Discuție nouă',
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      messages: [],
+    };
+    setChatSessions((prev) => [newSession, ...prev]);
+    setActiveChatSessionId(newSession.id);
+    if (window.electronAPI) {
+      window.electronAPI.saveChatSession(activeDoc.path, newSession);
+    }
+    return newSession;
+  };
+
+  const handleSendChatMessage = async (
+    sessionId: string | null,
+    text: string,
+    includeDocContext: boolean
+  ) => {
+    if (!activeDoc || !window.electronAPI) return;
+    if (!settings?.geminiApiKey) {
       alert('Te rugăm să configurezi cheia Gemini API din setări.');
       setIsSettingsOpen(true);
       return;
+    }
+
+    let targetSession = chatSessions.find((s) => s.id === sessionId);
+    if (!targetSession) {
+      targetSession = {
+        id: `chat_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+        title: text.length > 40 ? text.slice(0, 37) + '...' : text,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+        messages: [],
+      };
+      setChatSessions((prev) => [targetSession!, ...prev]);
+      setActiveChatSessionId(targetSession.id);
+    } else if (targetSession.messages.length === 0) {
+      targetSession = {
+        ...targetSession,
+        title: text.length > 40 ? text.slice(0, 37) + '...' : text,
+      };
     }
 
     const userMsg: ChatMessage = {
@@ -287,8 +346,17 @@ export const App: React.FC = () => {
       timestamp: new Date().toISOString(),
     };
 
-    const updatedMessages = [...chatMessages, userMsg];
-    setChatMessages(updatedMessages);
+    const updatedMessages = [...targetSession.messages, userMsg];
+    const updatedSession: ChatSession = {
+      ...targetSession,
+      updatedAt: new Date().toISOString(),
+      messages: updatedMessages,
+    };
+
+    setChatSessions((prev) =>
+      prev.map((s) => (s.id === updatedSession.id ? updatedSession : s))
+    );
+    await window.electronAPI.saveChatSession(activeDoc.path, updatedSession);
     setIsChatLoading(true);
 
     try {
@@ -297,33 +365,42 @@ export const App: React.FC = () => {
           ? 'gemini-flash-latest'
           : settings.geminiModel;
 
-      const res = await window.electronAPI!.chatAI({
+      const res = await window.electronAPI.chatAI({
         messages: updatedMessages.map((m) => ({
           role: m.role,
           content: m.content,
         })),
-        documentContext: includeDocContext && activeDoc ? docContent : undefined,
+        documentContext: includeDocContext ? docContent : undefined,
         apiKey: settings?.geminiApiKey,
         model: activeModel,
       });
 
+      let assistantMsg: ChatMessage;
       if (res.success && res.text) {
-        const assistantMsg: ChatMessage = {
+        assistantMsg = {
           id: `msg_${Date.now()}_a`,
           role: 'assistant',
           content: res.text,
           timestamp: new Date().toISOString(),
         };
-        setChatMessages((prev) => [...prev, assistantMsg]);
       } else {
-        const errorMsg: ChatMessage = {
+        assistantMsg = {
           id: `msg_${Date.now()}_err`,
           role: 'assistant',
           content: `⚠️ **Eroare:** ${res.error || 'Nu s-a putut obține răspunsul de la Gemini.'}`,
           timestamp: new Date().toISOString(),
         };
-        setChatMessages((prev) => [...prev, errorMsg]);
       }
+
+      const finalSession: ChatSession = {
+        ...updatedSession,
+        updatedAt: new Date().toISOString(),
+        messages: [...updatedMessages, assistantMsg],
+      };
+      setChatSessions((prev) =>
+        prev.map((s) => (s.id === finalSession.id ? finalSession : s))
+      );
+      await window.electronAPI.saveChatSession(activeDoc.path, finalSession);
     } catch (e: any) {
       const errorMsg: ChatMessage = {
         id: `msg_${Date.now()}_err`,
@@ -331,19 +408,50 @@ export const App: React.FC = () => {
         content: `⚠️ **Eroare la apelarea asistentului:** ${e.message}`,
         timestamp: new Date().toISOString(),
       };
-      setChatMessages((prev) => [...prev, errorMsg]);
+      const finalSession: ChatSession = {
+        ...updatedSession,
+        updatedAt: new Date().toISOString(),
+        messages: [...updatedMessages, errorMsg],
+      };
+      setChatSessions((prev) =>
+        prev.map((s) => (s.id === finalSession.id ? finalSession : s))
+      );
+      await window.electronAPI.saveChatSession(activeDoc.path, finalSession);
     } finally {
       setIsChatLoading(false);
     }
   };
 
-  const handleClearChat = () => {
-    setChatMessages([]);
+  const handleDeleteChatSession = async (sessionId: string) => {
+    if (!activeDoc || !window.electronAPI) return;
+    try {
+      await window.electronAPI.deleteChatSession(activeDoc.path, sessionId);
+      setChatSessions((prev) => {
+        const next = prev.filter((s) => s.id !== sessionId);
+        if (activeChatSessionId === sessionId) {
+          setActiveChatSessionId(next.length > 0 ? next[0].id : null);
+        }
+        return next;
+      });
+    } catch (e: any) {
+      alert(`Eroare la ștergerea discuției: ${e.message}`);
+    }
+  };
+
+  const handleClearAllChatSessions = async () => {
+    if (!activeDoc || !window.electronAPI) return;
+    try {
+      await window.electronAPI.clearChatSessions(activeDoc.path);
+      setChatSessions([]);
+      setActiveChatSessionId(null);
+    } catch (e: any) {
+      alert(`Eroare la ștergerea discuțiilor: ${e.message}`);
+    }
   };
 
   const handleAskChatFromBar = (prompt: string) => {
     setIsChatOpen(true);
-    handleSendChatMessage(prompt, true);
+    handleSendChatMessage(activeChatSessionId, prompt, true);
   };
 
   const wordCount = docContent.trim() ? docContent.trim().split(/\s+/).filter(Boolean).length : 0;
@@ -439,9 +547,9 @@ export const App: React.FC = () => {
             >
               <MessageSquare className={`w-3.5 h-3.5 ${isChatOpen ? 'text-white' : 'text-theme-accent'}`} />
               <span>Chat AI</span>
-              {chatMessages.length > 0 && (
+              {chatSessions.length > 0 && (
                 <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-theme-accent-soft text-theme-accent font-semibold ml-0.5">
-                  {chatMessages.length}
+                  {chatSessions.length}
                 </span>
               )}
             </button>
@@ -521,16 +629,20 @@ export const App: React.FC = () => {
         />
       )}
 
-      {/* AI Chat Drawer (conversational dialogue without document edit or diff) */}
+      {/* AI Chat Drawer (conversational dialogue organized per document) */}
       <ChatPanel
         isOpen={isChatOpen}
         onClose={() => setIsChatOpen(false)}
-        messages={chatMessages}
-        onSendMessage={handleSendChatMessage}
-        onClearChat={handleClearChat}
-        isLoading={isChatLoading}
         documentTitle={activeDoc?.name}
         hasDocument={!!activeDoc}
+        sessions={chatSessions}
+        activeSessionId={activeChatSessionId}
+        onSelectSession={setActiveChatSessionId}
+        onCreateNewSession={handleCreateNewChatSession}
+        onSendMessage={handleSendChatMessage}
+        onDeleteSession={handleDeleteChatSession}
+        onClearAllSessions={handleClearAllChatSessions}
+        isLoading={isChatLoading}
       />
 
       {/* Settings Modal */}

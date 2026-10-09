@@ -9,10 +9,14 @@ let mainWindow = null;
 const userDataPath = app.getPath('userData');
 const settingsFilePath = path.join(userDataPath, 'settings.json');
 const versionsDirPath = path.join(userDataPath, 'versions');
+const chatsDirPath = path.join(userDataPath, 'chats');
 
 // Ensure directories exist
 if (!fs.existsSync(versionsDirPath)) {
   fs.mkdirSync(versionsDirPath, { recursive: true });
+}
+if (!fs.existsSync(chatsDirPath)) {
+  fs.mkdirSync(chatsDirPath, { recursive: true });
 }
 
 function getSettings() {
@@ -108,6 +112,68 @@ function resetVersions(filePath) {
     const vFile = getVersionFilePath(filePath);
     if (fs.existsSync(vFile)) {
       fs.unlinkSync(vFile);
+    }
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+function getChatFilePath(filePath) {
+  const hash = Buffer.from(filePath).toString('base64url');
+  return path.join(chatsDirPath, `${hash}.json`);
+}
+
+function loadChatSessions(filePath) {
+  try {
+    const cFile = getChatFilePath(filePath);
+    if (fs.existsSync(cFile)) {
+      return JSON.parse(fs.readFileSync(cFile, 'utf8'));
+    }
+  } catch (err) {
+    console.error('Error reading chat sessions:', err);
+  }
+  return [];
+}
+
+function saveChatSession(filePath, session) {
+  try {
+    const cFile = getChatFilePath(filePath);
+    const sessions = loadChatSessions(filePath);
+    const existingIndex = sessions.findIndex(s => s.id === session.id);
+    if (existingIndex >= 0) {
+      sessions[existingIndex] = session;
+    } else {
+      sessions.unshift(session);
+    }
+    fs.writeFileSync(cFile, JSON.stringify(sessions, null, 2), 'utf8');
+    return { success: true, session };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+function deleteChatSession(filePath, sessionId) {
+  try {
+    const cFile = getChatFilePath(filePath);
+    let sessions = loadChatSessions(filePath);
+    sessions = sessions.filter(s => s.id !== sessionId);
+    if (sessions.length === 0) {
+      if (fs.existsSync(cFile)) fs.unlinkSync(cFile);
+    } else {
+      fs.writeFileSync(cFile, JSON.stringify(sessions, null, 2), 'utf8');
+    }
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err.message };
+  }
+}
+
+function clearChatSessions(filePath) {
+  try {
+    const cFile = getChatFilePath(filePath);
+    if (fs.existsSync(cFile)) {
+      fs.unlinkSync(cFile);
     }
     return { success: true };
   } catch (err) {
@@ -313,6 +379,23 @@ app.whenReady().then(() => {
 
   ipcMain.handle('version:reset', async (_, filePath) => {
     return resetVersions(filePath);
+  });
+
+  // Chat Storage Handlers (organized per document)
+  ipcMain.handle('chat:list', async (_, filePath) => {
+    return loadChatSessions(filePath);
+  });
+
+  ipcMain.handle('chat:save', async (_, filePath, session) => {
+    return saveChatSession(filePath, session);
+  });
+
+  ipcMain.handle('chat:delete', async (_, filePath, sessionId) => {
+    return deleteChatSession(filePath, sessionId);
+  });
+
+  ipcMain.handle('chat:clear', async (_, filePath) => {
+    return clearChatSessions(filePath);
   });
 
   // Settings Handlers

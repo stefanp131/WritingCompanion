@@ -22,4 +22,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Gemini AI
   generateAI: (params) => ipcRenderer.invoke('ai:generate', params),
   chatAI: (params) => ipcRenderer.invoke('ai:chat', params),
+
+  // Chat Sessions (organized per document)
+  listChatSessions: (filePath) => ipcRenderer.invoke('chat:list', filePath),
+  saveChatSession: (filePath, session) => ipcRenderer.invoke('chat:save', filePath, session),
+  deleteChatSession: (filePath, sessionId) => ipcRenderer.invoke('chat:delete', filePath, sessionId),
+  clearChatSessions: (filePath) => ipcRenderer.invoke('chat:clear', filePath),
 });
